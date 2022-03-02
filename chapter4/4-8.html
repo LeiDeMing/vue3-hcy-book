@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Document</title>
+</head>
+
+<body>
+
+</body>
+
+</html>
+<script>
+  const bucket = new WeakMap()
+  const data = {
+    foo: 1,
+    bar: 2
+  }
+  let activeEffect, temp1, temp2, effecStack = [],
+    isFlushing = false
+  const jobQueue = new Set()
+  const p = Promise.resolve()
+
+
+  function track(target, key) {
+    if (!activeEffect) return
+    let depsMap = bucket.get(target)
+    if (!depsMap) {
+      bucket.set(target, (depsMap = new Map()))
+    }
+    let deps = depsMap.get(key)
+    if (!deps) {
+      depsMap.set(key, (deps = new Set()))
+    }
+    deps.add(activeEffect)
+    activeEffect.deps.push(deps)
+  }
+
+  function trigger(target, key, newVal) {
+    const depsMap = bucket.get(target)
+    if (!depsMap) return
+    const effects = depsMap.get(key)
+    const effectsToRun = new Set()
+    effects && effects.forEach(effectFn => {
+      if (effectFn !== activeEffect) {
+        effectsToRun.add(effectFn)
+      }
+    })
+    effectsToRun.forEach(effectFn => {
+      if (effectFn.options.scheduler) {
+        effectFn.options.scheduler(effectFn)
+      } else {
+        effectFn()
+      }
+    })
+    // effects && effects.forEach(fn => fn())
+  }
+
+  function clean(effectFn) {
+    for (let i = 0; i < effectFn.deps.length; i++) {
+      const deps = effectFn.deps[i]
+      deps.delete(effectFn)
+    }
+    effectFn.deps.length = 0
+  }
+  const obj = new Proxy(data, {
+    get(target, key) {
+      track(target, key)
+      return target[key]
+    },
+    set(target, key, newVal) {
+      target[key] = newVal
+      trigger(target, key, newVal)
+      return true
+    }
+  })
+
+  function flushJob() {
+    if (isFlushing) return
+    isFlushing = true
+    p.then(() => {
+      jobQueue.forEach(job => job())
+    }).finally(() => {
+      isFlushing = false
+    })
+  }
+
+  function effect(fn, options = {}) {
+    const effectFn = () => {
+      clean(effectFn)
+      activeEffect = effectFn
+      effecStack.push(effectFn)
+      const res = fn()
+      effecStack.pop()
+      activeEffect = effecStack[effecStack.length - 1]
+      return res
+    }
+    effectFn.options = options
+    effectFn.deps = []
+
+    if (!options.lazy) {
+      effectFn()
+    }
+    return effectFn
+  }
+
+  function computed(getter) {
+    let value
+    let dirty = true
+    const effecFn = effect(getter, {
+      lazy: true,
+      scheduler() {
+        if (!dirty) {
+          dirty = true
+          trigger(obj, 'value')
+        }
+      }
+    })
+
+    const obj = {
+      get value() {
+        if (dirty) {
+          value = effecFn()
+          dirty = false
+        }
+        track(obj, 'value')
+        return value
+      }
+    }
+    return obj
+  }
+
+  const sumRes = computed(() => obj.foo + obj.bar)
+
+  effect(() => {
+    console.log(sumRes.value)
+  })
+  obj.foo++
+</script>
